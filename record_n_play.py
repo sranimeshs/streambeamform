@@ -78,14 +78,15 @@ class BeamFormer(object):
             if opt_delay < 0:
                 temp_right[:NUM_BUFF * BUFF_SIZE + opt_delay] = self.right_buff.buff[-opt_delay:]
             # We should shift the right buffer to leading position.
-            elif opt_delay > 0:
+            elif opt_delay >= 0:
                 temp_right[opt_delay:] = self.right_buff.buff[:self.right_buff.size - opt_delay]
 
             # The middle buffer is the buffer of interest
             l = self.left_buff.buff[(NUM_BUFF/2) * BUFF_SIZE: (NUM_BUFF/2 + 1) * BUFF_SIZE]
             r = temp_right[(NUM_BUFF/2) * BUFF_SIZE: (NUM_BUFF/2 + 1) * BUFF_SIZE]
-            # Return the last BUFF_SIZE of beamformed data
-            return (l+r)/2
+            # Return the middle BUFF_SIZE of beamformed data
+            # Avoid overflowing by dividing first and then adding
+            return (l/2 + r/2)
         else:
             # We are bootstrapping. Send the average of the mono channels.
             return None
