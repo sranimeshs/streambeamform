@@ -9,87 +9,43 @@ import logging
 import subprocess
 from scipy.io import wavfile
 
-
-# Sample rate for recording the audio
-SAMPLE_RATE = 44100
-# Number of channels
-NUM_CHANNELS = 2
-# Number of buffers for computing correlation
-NUM_BUFF = 3
-
-class WavBuffer(object):
-    def __init__(self, datatype):
-        self.buff = np.zeros((NUM_BUFF * BUFF_SIZE,), dtype=datatype)
-        self.size = 0
-
-    def is_buffer_full(self):
-        if self.size == NUM_BUFF * BUFF_SIZE:
-            return True
-        return False
-
-    def insert(self, data):
-        assert len(data) <= BUFF_SIZE, "The size of the data is more than %d" % BUFF_SIZE
-
-        if self.is_buffer_full():
-            # Make space for the new buffer
-            self.buff[:(NUM_BUFF-1)*BUFF_SIZE] = self.buff[BUFF_SIZE:NUM_BUFF*BUFF_SIZE]
-            self.buff[-BUFF_SIZE:] = data
-        else:
-            self.buff[self.size: self.size + len(data)] = data
-            self.size += len(data)
-
+logging.basicConfig(filename="record_n_play.log", level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class BeamFormer(object):
     def __init__(self, datatype, delay_list):
         self.delays = delay_list
 
-        # Initialize buffer for left and right channels
-        self.left_buff = WavBuffer(datatype)
-        self.right_buff = WavBuffer(datatype)
-
-        # Insert an empty buffer to begin with
-        self.left_buff.insert(np.zeros((BUFF_SIZE,), dtype=datatype))
-        self.right_buff.insert(np.zeros((BUFF_SIZE,), dtype=datatype))
-
-        #self.shifted = {delay: np.zeros((BUFF_SIZE,), dtype=datatype) for delay in self.delays}
-
     def get_beamformed_data(self, left_wav, right_wav):
-        self.left_buff.insert(left_wav)
-        self.right_buff.insert(right_wav)
+        # Prepare data
+        left_wav = np.append(self.left_history, left_wav)
+        right_wav = np.append(self.right_history, right_wav)
 
-        if self.left_buff.is_buffer_full():
-            # Compute full correlation. Now we have results for all positive and
-            # negative delays.
-            xcorr = np.correlate(self.left_buff.buff, self.right_buff.buff, 'full')
+        # Compute full correlation. Now we have results for all positive and
+        # negative delays.
+        xcorr = np.correlate(left_wav, right_wav, 'full')
 
-            opt_delay = 0
-            max_corr = -sys.maxsize
+        opt_delay = 0
+        max_corr = -sys.maxsize
 
-            # Find which delay in the list of delays gives us the max correlation
-            for delay in self.delays:
-                if xcorr[len(xcorr)/2 + delay] > max_corr:
-                    max_corr = xcorr[len(xcorr)/2 + delay]
-                    opt_delay = delay
+        # Find which delay in the list of delays gives us the max correlation
+        for delay in self.delays:
+            if xcorr[len(xcorr)/2 + delay] > max_corr:
+                max_corr = xcorr[len(xcorr)/2 + delay]
+                opt_delay = delay
 
-            # Get a temporary right buffer and shift it accordingly
-            temp_right = np.zeros((NUM_BUFF * BUFF_SIZE,), dtype=right_wav.dtype)
-            # If the lag is negative that means that the right buffer should lag behind left buffer
-            # for better correlation.
-            if opt_delay < 0:
-                temp_right[:NUM_BUFF * BUFF_SIZE + opt_delay] = self.right_buff.buff[-opt_delay:]
-            # We should shift the right buffer to leading position.
-            elif opt_delay >= 0:
-                temp_right[opt_delay:] = self.right_buff.buff[:self.right_buff.size - opt_delay]
+        if opt_delay < 0:
+            r = right_wav[-opt_delay: min(-opt_delay + left_wav.size, right_wav.size)]
+            l = left_wav[:r.size]
 
-            # The middle buffer is the buffer of interest
-            l = self.left_buff.buff[(NUM_BUFF/2) * BUFF_SIZE: (NUM_BUFF/2 + 1) * BUFF_SIZE]
-            r = temp_right[(NUM_BUFF/2) * BUFF_SIZE: (NUM_BUFF/2 + 1) * BUFF_SIZE]
-            # Return the middle BUFF_SIZE of beamformed data
-            # Avoid overflowing by dividing first and then adding
-            return (l/2 + r/2)
-        else:
-            # We are bootstrapping. Send the average of the mono channels.
-            return None
+        elif opt_delay >= 0:
+            l = left_wav[opt_delay: min(left_wav.size, opt_delay + right_wav.size)]
+            r = right_wav[:l.size]
+
+        # Avoid overflowing by dividing first and then adding
+        assert l.size == r.size, "left and right buffer sizes are not matching"
+        logger.info("%d, %d, %d, %d", opt_delay, l.size, self.left_history.size, self.right_history.size)
+        return (l/2 + r/2)
 
 
 @click.command()
@@ -127,18 +83,17 @@ def replay_and_record(inp_wav_file, out_wav_file, buff_size, stats_file):
         mono_out = beamformer.get_beamformed_data(left_frames, right_frames)
         end_beamforming = time.time()
 
-        if frames_read > 0:
-            outwav[frames_written:frames_written + BUFF_SIZE] = mono_out;
-            frames_written += BUFF_SIZE
+        outwav[frames_written:frames_written + mono_out.size] = mono_out;
+        frames_written += mono_out.size
 
         frames_read = frame_end_ind
-        time_taken_per_buffer.append((end_beamforming - start_beamforming))
+        time_taken_per_buffer.append([(end_beamforming - start_beamforming), mono_out.size])
 
     wavfile.write(out_wav_file, rate, outwav)
 
     with open(stats_file, 'w') as fw:
         for stat in time_taken_per_buffer:
-            fw.write(str(stat) + '\n')
+            fw.write(str(stat[0]) + ',' + str(stat[1]) + '\n')
 
 
 if __name__ == '__main__':
