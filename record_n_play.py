@@ -65,13 +65,6 @@ class BeamFormer(object):
             remaining_left = left_unaligned[opt_delay + l.size:]
             remaining_right = right_unaligned[r.size:]
 
-        if remaining_left.size > 0 or remaining_right.size > 0:
-            self.left_history = np.append(l, remaining_left)
-            self.right_history = np.append(r, remaining_right)
-        else:
-            self.left_history = np.zeros((0,), dtype=l.dtype)
-            self.right_history = np.zeros((0,), dtype=r.dtype)
-
         # Avoid overflowing by dividing first and then adding
         assert l.size == r.size, "left and right buffer sizes are not matching"
         logger.info("%d, %d, %d, %d", opt_delay, l.size, self.left_history.size, self.right_history.size)
