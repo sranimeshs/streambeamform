@@ -17,27 +17,10 @@ class BeamFormer(object):
         # The list of delays we are interested in.
         self.delays = delay_list
 
-        # Initialize history buffer for left and right channels.
-        # This buffer is empty if we have aligned everything so far. Otherwise,
-        # we keep the aligned and unaligned data from the last funcation call.
-        self.left_history = np.zeros((0,), dtype=datatype)
-        self.right_history = np.zeros((0,), dtype=datatype)
-
     def get_beamformed_data(self, left_wav, right_wav):
-        # Correlation is computed on the history data points + incoming data point.
-        left_corr_data = np.append(self.left_history, left_wav)
-        right_corr_data = np.append(self.right_history, right_wav)
-
-        # Already aligned data size
-        aligned_data = min(self.left_history.size, self.right_history.size)
-
-        # Data points that need aligning
-        left_unaligned = left_corr_data[aligned_data:]
-        right_unaligned = right_corr_data[aligned_data:]
-
         # Compute full correlation. Now we have results for all positive and
         # negative delays.
-        xcorr = np.correlate(left_corr_data, right_corr_data, 'full')
+        xcorr = np.correlate(left_wav, right_wav, 'full')
 
         opt_delay = 0
         max_corr = -sys.maxsize
@@ -48,26 +31,19 @@ class BeamFormer(object):
                 max_corr = xcorr[len(xcorr)/2 + delay]
                 opt_delay = delay
 
-        remaining_left = np.zeros((0,), dtype=left_wav.dtype)
-        remaining_right = np.zeros((0,), dtype=right_wav.dtype)
         left_preamble = np.zeros((0,), dtype=left_wav.dtype)
         if opt_delay < 0:
-            r = right_unaligned[-opt_delay: min(-opt_delay + left_unaligned.size, right_unaligned.size)]
-            l = left_unaligned[:r.size]
+            r = right_wav[-opt_delay:]
+            l = left_wav[:r.size]
 
-            remaining_left = left_unaligned[l.size:]
-            remaining_right = right_unaligned[-opt_delay + r.size:]
         elif opt_delay >= 0:
-            left_preamble = left_unaligned[:opt_delay]
-            l = left_unaligned[opt_delay: min(left_unaligned.size, opt_delay + right_unaligned.size)]
-            r = right_unaligned[:l.size]
-
-            remaining_left = left_unaligned[opt_delay + l.size:]
-            remaining_right = right_unaligned[r.size:]
+            left_preamble = left_wav[:opt_delay]
+            l = left_wav[opt_delay:]
+            r = right_wav[:l.size]
 
         # Avoid overflowing by dividing first and then adding
         assert l.size == r.size, "left and right buffer sizes are not matching"
-        logger.info("%d, %d, %d, %d", opt_delay, l.size, self.left_history.size, self.right_history.size)
+        logger.info("%d, %d", opt_delay, l.size)
         return np.append(left_preamble, (l/2 + r/2))
 
 
