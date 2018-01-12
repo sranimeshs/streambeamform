@@ -7,10 +7,14 @@ import click
 import numpy as np
 import logging
 import subprocess
+import audioop
 from scipy.io import wavfile
 
 logging.basicConfig(filename="record_n_play.log", level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+SAMPLE_RATE = 16000
+SAMPLE_RATE_SS = 44100
 
 class BeamFormer(object):
     def __init__(self, datatype, delay_list):
@@ -20,31 +24,41 @@ class BeamFormer(object):
     def get_beamformed_data(self, left_wav, right_wav):
         # Compute full correlation. Now we have results for all positive and
         # negative delays.
-        xcorr = np.correlate(left_wav, right_wav, 'full')
-
-        opt_delay = 0
         max_corr = -sys.maxsize
+        opt_delay = 0
+        opt_l = left_wav
+        opt_r = right_wav
 
-        # Find which delay in the list of delays gives us the max correlation
         for delay in self.delays:
-            if xcorr[len(xcorr)/2 + delay] > max_corr:
-                max_corr = xcorr[len(xcorr)/2 + delay]
+            if delay < 0:
+                r = right_wav[-delay:]
+                l = left_wav[: r.size]
+                corrcoef = np.corrcoef(l, r)[0,1]
+            else:
+                l = left_wav[delay:]
+                r = right_wav[: l.size]
+                corrcoef = np.corrcoef(l, r)[0,1]
+
+            if max_corr < corrcoef:
+                max_corr = corrcoef
                 opt_delay = delay
+                opt_l = l
+                opt_r = r
 
-        left_preamble = np.zeros((0,), dtype=left_wav.dtype)
+        left_pad = np.zeros((0,), dtype=left_wav.dtype)
+        right_pad = np.zeros((0,), dtype=left_wav.dtype)
+
         if opt_delay < 0:
-            r = right_wav[-opt_delay:]
-            l = left_wav[:r.size]
+            right_pad = left_wav[opt_l.size:]
 
-        elif opt_delay >= 0:
-            left_preamble = left_wav[:opt_delay]
-            l = left_wav[opt_delay:]
-            r = right_wav[:l.size]
+        else:
+            left_pad = left_wav[:opt_delay]
 
         # Avoid overflowing by dividing first and then adding
-        assert l.size == r.size, "left and right buffer sizes are not matching"
-        logger.info("%d, %d", opt_delay, l.size)
-        return np.append(left_preamble, (l/2 + r/2))
+        assert opt_l.size == opt_r.size, "left and right buffer sizes are not matching"
+        outdata = np.append(np.append(left_pad, (opt_l/2 + opt_r/2)), right_pad)
+        logger.info("%d, %d", opt_delay, outdata.size)
+        return audioop.ratecv(outdata.tobytes(), 2, 1, SAMPLE_RATE_SS, SAMPLE_RATE, None)[0]
 
 
 @click.command()
@@ -63,7 +77,8 @@ def replay_and_record(inp_wav_file, out_wav_file, buff_size, stats_file):
     leftwav = wavdata[:,0]
     rightwav = wavdata[:,1]
 
-    outwav = np.zeros((len(leftwav),), dtype=leftwav.dtype)
+    #outwav = np.zeros((len(leftwav),), dtype=leftwav.dtype)
+    outwav = []
 
     # Delay list that we want to investigate
     delay_list = range(-3, 4)
@@ -73,6 +88,8 @@ def replay_and_record(inp_wav_file, out_wav_file, buff_size, stats_file):
     frames_read = 0
     frames_written = 0
     time_taken_per_buffer = []
+
+    faudio = open('audio.raw', 'w+')
     while len(leftwav) - frames_read > BUFF_SIZE:
         frame_end_ind = frames_read + min(BUFF_SIZE, len(leftwav) - frames_read)
         left_frames = leftwav[frames_read : frame_end_ind]
@@ -82,13 +99,14 @@ def replay_and_record(inp_wav_file, out_wav_file, buff_size, stats_file):
         mono_out = beamformer.get_beamformed_data(left_frames, right_frames)
         end_beamforming = time.time()
 
-        outwav[frames_written:frames_written + mono_out.size] = mono_out;
-        frames_written += mono_out.size
+        faudio.write(mono_out)
+        frames_written += len(mono_out)/2
 
         frames_read = frame_end_ind
-        time_taken_per_buffer.append([(end_beamforming - start_beamforming), mono_out.size])
+        time_taken_per_buffer.append([(end_beamforming - start_beamforming), len(mono_out)/2])
 
-    wavfile.write(out_wav_file, rate, outwav)
+    #wavfile.write(out_wav_file, SAMPLE_RATE, outwav)
+    faudio.close()
 
     with open(stats_file, 'w') as fw:
         for stat in time_taken_per_buffer:
